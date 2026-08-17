@@ -15,5 +15,6 @@ Tries to be as safe as possible:
 
 - Checks ETag headers to avoid downloading keys every time.
 - Ensures fetched keys are valid.
+- Detects local modifications and restores the keys from the remote.
 - Only overwrites the target file when at least one valid key was retrieved.
-- Write is atomic, ensuring no partial/corrupted `authorized_keys` file.
+- Writes are atomic, ensuring no partial/corrupted `authorized_keys` file.

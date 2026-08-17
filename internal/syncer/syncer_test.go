@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,12 +16,13 @@ import (
 
 	"github.com/myhro/ssh-keys/internal/config"
 	"github.com/myhro/ssh-keys/internal/fetch"
+	"github.com/myhro/ssh-keys/internal/state"
 )
 
 type setup struct {
-	ETagFile string
-	File     string
-	Syncer   *Syncer
+	File      string
+	StateFile string
+	Syncer    *Syncer
 }
 
 func publicKey(t *testing.T) string {
@@ -46,14 +48,14 @@ func newSetup(t *testing.T, handler http.HandlerFunc) *setup {
 
 	dir := t.TempDir()
 	cfg := &config.Config{
-		ETagFile: filepath.Join(dir, "authorized_keys.etag"),
-		File:     filepath.Join(dir, "authorized_keys"),
-		URL:      server.URL,
+		File:      filepath.Join(dir, "authorized_keys"),
+		StateFile: filepath.Join(dir, "authorized_keys.ssh-keys"),
+		URL:       server.URL,
 	}
 
 	return &setup{
-		ETagFile: cfg.ETagFile,
-		File:     cfg.File,
+		File:      cfg.File,
+		StateFile: cfg.StateFile,
 		Syncer: &Syncer{
 			Client: fetch.New(),
 			Config: cfg,
@@ -81,6 +83,31 @@ func write(t *testing.T, path string, data string) {
 	}
 }
 
+func readState(t *testing.T, path string) *state.Data {
+	t.Helper()
+
+	data := &state.Data{}
+	err := json.Unmarshal([]byte(read(t, path)), data)
+	if err != nil {
+		t.Fatalf("decoding %s: %v", path, err)
+	}
+
+	return data
+}
+
+func writeSynced(t *testing.T, s *setup, content string, etag string) {
+	t.Helper()
+
+	write(t, s.File, content)
+	err := state.New(s.StateFile).Write(&state.Data{
+		ETag:   etag,
+		SHA256: state.Digest([]byte(content)),
+	})
+	if err != nil {
+		t.Fatalf("writing %s: %v", s.StateFile, err)
+	}
+}
+
 func TestRun(t *testing.T) {
 	key := publicKey(t)
 	s := newSetup(t, func(w http.ResponseWriter, r *http.Request) {
@@ -100,9 +127,13 @@ func TestRun(t *testing.T) {
 	if !strings.HasSuffix(content, key+"\n") {
 		t.Fatalf("expected the file to end with the key, got %q", content)
 	}
-	etag := read(t, s.ETagFile)
-	if etag != `"abc123"`+"\n" {
-		t.Fatalf(`expected "abc123", got %q`, etag)
+
+	cached := readState(t, s.StateFile)
+	if cached.ETag != `"abc123"` {
+		t.Fatalf(`expected "abc123", got %q`, cached.ETag)
+	}
+	if cached.SHA256 != state.Digest([]byte(content)) {
+		t.Fatalf("expected the digest of the written file, got %q", cached.SHA256)
 	}
 }
 
@@ -112,15 +143,14 @@ func TestRunNotModified(t *testing.T) {
 		sent = r.Header.Get("If-None-Match")
 		w.WriteHeader(http.StatusNotModified)
 	})
-	write(t, s.File, "current keys\n")
-	write(t, s.ETagFile, `"abc123"`+"\n")
+	writeSynced(t, s, "current keys\n", `"abc123"`)
 
 	err := s.Syncer.Run(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if sent != `"abc123"` {
-		t.Fatalf(`expected the cached etag to be sent, got %q`, sent)
+		t.Fatalf("expected the cached etag to be sent, got %q", sent)
 	}
 	content := read(t, s.File)
 	if content != "current keys\n" {
@@ -128,25 +158,93 @@ func TestRunNotModified(t *testing.T) {
 	}
 }
 
-func TestRunMissingTargetIgnoresETag(t *testing.T) {
-	key := publicKey(t)
-	sent := "unset"
+func TestRunIgnoresETagWithoutIntactKeysFile(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		missing bool
+		cached  *state.Data
+	}{
+		{
+			name:    "missing keys file",
+			missing: true,
+			cached:  &state.Data{ETag: `"abc123"`, SHA256: state.Digest([]byte("current keys\n"))},
+		},
+		{
+			name:    "empty keys file",
+			content: "",
+			cached:  &state.Data{ETag: `"abc123"`, SHA256: state.Digest([]byte("current keys\n"))},
+		},
+		{
+			name:    "locally modified keys file",
+			content: "current keys\nssh-ed25519 injected\n",
+			cached:  &state.Data{ETag: `"abc123"`, SHA256: state.Digest([]byte("current keys\n"))},
+		},
+		{
+			name:    "missing state",
+			content: "current keys\n",
+		},
+		{
+			name:    "digest recorded without an etag",
+			content: "current keys\n",
+			cached:  &state.Data{SHA256: state.Digest([]byte("current keys\n"))},
+		},
+		{
+			name:    "etag recorded without a digest",
+			content: "current keys\n",
+			cached:  &state.Data{ETag: `"abc123"`},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			key := publicKey(t)
+			sent := "unset"
+			s := newSetup(t, func(w http.ResponseWriter, r *http.Request) {
+				sent = r.Header.Get("If-None-Match")
+				w.Write([]byte(key + "\n"))
+			})
+			if !tc.missing {
+				write(t, s.File, tc.content)
+			}
+			if tc.cached != nil {
+				err := state.New(s.StateFile).Write(tc.cached)
+				if err != nil {
+					t.Fatalf("writing %s: %v", s.StateFile, err)
+				}
+			}
+
+			err := s.Syncer.Run(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if sent != "" {
+				t.Fatalf("expected no etag to be sent, got %q", sent)
+			}
+
+			content := read(t, s.File)
+			if !strings.HasSuffix(content, key+"\n") {
+				t.Fatalf("expected the remote keys to be restored, got %q", content)
+			}
+			if strings.Contains(content, "injected") {
+				t.Fatalf("expected the local modification to be gone, got %q", content)
+			}
+			if digest := readState(t, s.StateFile).SHA256; digest != state.Digest([]byte(content)) {
+				t.Fatalf("expected the digest of the written file, got %q", digest)
+			}
+		})
+	}
+}
+
+func TestRunUnreadableState(t *testing.T) {
 	s := newSetup(t, func(w http.ResponseWriter, r *http.Request) {
-		sent = r.Header.Get("If-None-Match")
-		w.Write([]byte(key + "\n"))
+		t.Error("expected no request to be made")
 	})
-	write(t, s.ETagFile, `"abc123"`+"\n")
+	s.Syncer.Config.StateFile = t.TempDir()
 
 	err := s.Syncer.Run(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if sent != "" {
-		t.Fatalf("expected no etag to be sent, got %q", sent)
-	}
-	content := read(t, s.File)
-	if !strings.HasSuffix(content, key+"\n") {
-		t.Fatalf("expected the key to be written, got %q", content)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
 	}
 }
 
@@ -184,8 +282,7 @@ func TestRunKeepsCurrentKeysOnFailure(t *testing.T) {
 				w.WriteHeader(tc.status)
 				w.Write([]byte(tc.body))
 			})
-			write(t, s.File, "current keys\n")
-			write(t, s.ETagFile, `"abc123"`+"\n")
+			writeSynced(t, s, "current keys\n", `"abc123"`)
 
 			err := s.Syncer.Run(context.Background())
 			if err == nil {
@@ -197,9 +294,12 @@ func TestRunKeepsCurrentKeysOnFailure(t *testing.T) {
 				t.Fatalf("expected the file to be untouched, got %q", content)
 			}
 
-			etag := read(t, s.ETagFile)
-			if etag != `"abc123"`+"\n" {
-				t.Fatalf("expected the etag to be untouched, got %q", etag)
+			cached := readState(t, s.StateFile)
+			if cached.ETag != `"abc123"` {
+				t.Fatalf("expected the state to be untouched, got %q", cached.ETag)
+			}
+			if cached.SHA256 != state.Digest([]byte(content)) {
+				t.Fatalf("expected the state to be untouched, got %q", cached.SHA256)
 			}
 		})
 	}
@@ -215,8 +315,28 @@ func TestRunWithoutETagHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	_, err = os.Stat(s.ETagFile)
-	if !os.IsNotExist(err) {
-		t.Fatal("expected no etag file to be written")
+
+	cached := readState(t, s.StateFile)
+	if cached.ETag != "" {
+		t.Fatalf("expected no etag to be recorded, got %q", cached.ETag)
+	}
+	if cached.SHA256 != state.Digest([]byte(read(t, s.File))) {
+		t.Fatalf("expected the digest of the written file, got %q", cached.SHA256)
+	}
+}
+
+func TestRunWriteFailure(t *testing.T) {
+	key := publicKey(t)
+	s := newSetup(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(key + "\n"))
+	})
+	s.Syncer.Config.File = filepath.Join(filepath.Dir(s.File), "missing", "authorized_keys")
+
+	err := s.Syncer.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if _, err := os.Stat(s.StateFile); !os.IsNotExist(err) {
+		t.Fatal("expected no state to be recorded")
 	}
 }

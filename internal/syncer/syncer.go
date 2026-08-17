@@ -9,6 +9,7 @@ import (
 	"github.com/myhro/ssh-keys/internal/config"
 	"github.com/myhro/ssh-keys/internal/fetch"
 	"github.com/myhro/ssh-keys/internal/keys"
+	"github.com/myhro/ssh-keys/internal/state"
 	"github.com/myhro/ssh-keys/internal/store"
 )
 
@@ -32,15 +33,16 @@ func (s *Syncer) Run(ctx context.Context) error {
 	}
 
 	target := store.New(s.Config.File)
-	etagFile := store.New(s.Config.ETagFile)
+	stateFile := state.New(s.Config.StateFile)
 
-	etag := ""
-	if target.Exists() {
-		cached, err := etagFile.Read()
-		if err != nil {
-			return err
-		}
-		etag = cached
+	cached, err := stateFile.Read()
+	if err != nil {
+		return err
+	}
+
+	etag, err := s.validator(target, cached)
+	if err != nil {
+		return err
 	}
 
 	res, err := s.Client.Get(ctx, s.Config.URL, etag)
@@ -58,16 +60,37 @@ func (s *Syncer) Run(ctx context.Context) error {
 		return err
 	}
 
-	err = target.Write(s.content(list))
+	content := s.content(list)
+	err = target.Write(content)
 	if err != nil {
 		return err
 	}
 	slog.Info("keys updated", "file", target.Path, "keys", list.Count)
 
-	if res.ETag == "" {
-		return nil
+	return stateFile.Write(&state.Data{
+		ETag:   res.ETag,
+		SHA256: state.Digest(content),
+	})
+}
+
+func (s *Syncer) validator(target *store.File, cached *state.Data) (string, error) {
+	if cached.ETag == "" || cached.SHA256 == "" {
+		return "", nil
 	}
-	return etagFile.Write([]byte(res.ETag + "\n"))
+
+	content, err := target.Read()
+	if err != nil {
+		return "", err
+	}
+	if len(content) == 0 {
+		return "", nil
+	}
+	if state.Digest(content) != cached.SHA256 {
+		slog.Warn("keys file was modified outside ssh-keys, restoring", "file", target.Path)
+		return "", nil
+	}
+
+	return cached.ETag, nil
 }
 
 func (s *Syncer) content(list *keys.List) []byte {

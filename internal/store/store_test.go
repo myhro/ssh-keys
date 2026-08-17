@@ -6,48 +6,39 @@ import (
 	"testing"
 )
 
-func TestExists(t *testing.T) {
+func TestRead(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "authorized_keys")
 
 	file := New(path)
-	if file.Exists() {
-		t.Fatal("expected a missing file")
+	data, err := file.Read()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if data != nil {
+		t.Fatalf("expected no data, got %q", data)
 	}
 
-	err := os.WriteFile(path, []byte("data\n"), perm)
+	err = os.WriteFile(path, []byte(" keys \n"), perm)
 	if err != nil {
 		t.Fatalf("writing file: %v", err)
 	}
-	if !file.Exists() {
-		t.Fatal("expected an existing file")
+
+	data, err = file.Read()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(data) != " keys \n" {
+		t.Fatalf("expected the bytes to be returned as-is, got %q", data)
 	}
 }
 
-func TestRead(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "authorized_keys.etag")
+func TestReadUnreadableFile(t *testing.T) {
+	path := t.TempDir()
 
-	file := New(path)
-	etag, err := file.Read()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if etag != "" {
-		t.Fatalf("expected an empty string, got %q", etag)
-	}
-
-	err = os.WriteFile(path, []byte(` "abc123" `+"\n"), perm)
-	if err != nil {
-		t.Fatalf("writing file: %v", err)
-	}
-
-	etag, err = file.Read()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if etag != `"abc123"` {
-		t.Fatalf(`expected "abc123", got %q`, etag)
+	_, err := New(path).Read()
+	if err == nil {
+		t.Fatal("expected an error, got nil")
 	}
 }
 

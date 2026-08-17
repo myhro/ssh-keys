@@ -43,8 +43,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.File != file {
 		t.Fatalf("expected %q, got %q", file, cfg.File)
 	}
-	if cfg.ETagFile != file+".etag" {
-		t.Fatalf("expected %q, got %q", file+".etag", cfg.ETagFile)
+	if cfg.StateFile != file+".ssh-keys" {
+		t.Fatalf("expected %q, got %q", file+".ssh-keys", cfg.StateFile)
 	}
 }
 
@@ -66,8 +66,8 @@ func TestLoadOverrides(t *testing.T) {
 	if cfg.File != "/srv/authorized_keys" {
 		t.Fatalf("expected the file override, got %q", cfg.File)
 	}
-	if cfg.ETagFile != "/srv/authorized_keys.etag" {
-		t.Fatalf("expected the etag file next to the keys file, got %q", cfg.ETagFile)
+	if cfg.StateFile != "/srv/authorized_keys.ssh-keys" {
+		t.Fatalf("expected the state file next to the keys file, got %q", cfg.StateFile)
 	}
 }
 
@@ -117,13 +117,13 @@ func TestLoadUnknownUser(t *testing.T) {
 	}
 }
 
-func TestLoadETagFileWithoutKeysFile(t *testing.T) {
+func TestLoadStateFileWithoutKeysFile(t *testing.T) {
 	setenv(t, map[string]string{
 		"HOME": t.TempDir(),
 	})
 
 	cfg := &Config{}
-	err := cfg.loadETagFile()
+	err := cfg.loadStateFile()
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"strings"
 )
 
 const perm = 0o600
@@ -18,20 +17,15 @@ func New(path string) *File {
 	return &File{Path: path}
 }
 
-func (f *File) Exists() bool {
-	_, err := os.Stat(f.Path)
-	return err == nil
-}
-
-func (f *File) Read() (string, error) {
+func (f *File) Read() ([]byte, error) {
 	data, err := os.ReadFile(f.Path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return "", nil
+		return nil, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("reading %s: %w", f.Path, err)
+		return nil, fmt.Errorf("reading %s: %w", f.Path, err)
 	}
-	return strings.TrimSpace(string(data)), nil
+	return data, nil
 }
 
 func (f *File) Write(data []byte) error {

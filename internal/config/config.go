@@ -19,9 +19,9 @@ func (systemUser) Current() (*user.User, error) {
 }
 
 type Config struct {
-	ETagFile string
-	File     string
-	URL      string
+	File      string
+	StateFile string
+	URL       string
 
 	user userLookup
 }
@@ -48,7 +48,7 @@ func (c *Config) load() error {
 		return err
 	}
 
-	return c.loadETagFile()
+	return c.loadStateFile()
 }
 
 func (c *Config) loadURL() error {
@@ -100,12 +100,12 @@ func (c *Config) loadFile() error {
 	return nil
 }
 
-func (c *Config) loadETagFile() error {
+func (c *Config) loadStateFile() error {
 	if c.File == "" {
 		return errors.New("loading config: keys file is not set")
 	}
 
-	c.ETagFile = c.File + ".etag"
+	c.StateFile = c.File + ".ssh-keys"
 
 	return nil
 }
