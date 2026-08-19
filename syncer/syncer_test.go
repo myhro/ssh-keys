@@ -14,9 +14,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/myhro/ssh-keys/internal/config"
-	"github.com/myhro/ssh-keys/internal/fetch"
-	"github.com/myhro/ssh-keys/internal/state"
+	"github.com/myhro/ssh-keys/config"
+	"github.com/myhro/ssh-keys/fetch"
+	"github.com/myhro/ssh-keys/state"
 )
 
 type setup struct {

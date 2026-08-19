@@ -7,8 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/myhro/ssh-keys/internal/config"
-	"github.com/myhro/ssh-keys/internal/syncer"
+	"github.com/myhro/ssh-keys/config"
+	"github.com/myhro/ssh-keys/syncer"
 )
 
 func main() {

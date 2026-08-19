@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/myhro/ssh-keys/internal/store"
+	"github.com/myhro/ssh-keys/store"
 )
 
 type Data struct {
